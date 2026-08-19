@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 240px;
+      margin: 0;
+      padding: 12px;
+      font-family: sans-serif;
+    }
+    h1 {
+      font-size: 14px;
+      margin: 0 0 10px;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    label {
+      font-size: 13px;
+    }
+    select {
+      font-size: 13px;
+    }
+    button {
+      width: 100%;
+      margin-top: 4px;
+      padding: 6px 0;
+      font-size: 13px;
+    }
+    .status {
+      font-size: 12px;
+      color: #666;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Platform Spoofer</h1>
+  <div class="row">
+    <label for="toggle">自動適用</label>
+    <input type="checkbox" id="toggle">
+  </div>
+  <div class="row">
+    <label for="profile">偽装先</label>
+    <select id="profile"></select>
+  </div>
+  <button id="reload">現在のタブをリロード</button>
+  <div class="status" id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
