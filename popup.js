@@ -92,6 +92,11 @@ chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
   renderCurrentSite();
 });
 
+if (chrome.permissions && chrome.permissions.onAdded) {
+  chrome.permissions.onAdded.addListener(() => send({ type: "getStatus" }, refresh));
+  chrome.permissions.onRemoved.addListener(() => send({ type: "getStatus" }, refresh));
+}
+
 toggleCurrentBtn.addEventListener("click", () => {
   if (!currentOrigin) return;
   const isIncluded = sites.includes(currentOrigin);

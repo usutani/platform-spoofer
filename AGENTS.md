@@ -29,10 +29,10 @@ Chrome 拡張機能（Manifest V3）、ビルド/テスト/lint ツールなし�
 - **サイト単位の適用**:
   - 「サイト」はオリジン（`new URL(url).origin`、例: `https://example.com`）で判定。パス・クエリは無視、サブドメインは別サイト
   - 追加/削除/プロファイル切替時に `rebuildAll()`（`rebuildRules` + `rebuildContentScripts`）で DNR 動的ルールと登録済みコンテンツスクリプトを再構築
-  - `chrome.permissions.onRemoved` で Chrome 側から権限が取り消された場合、該当オリジンを `spooferSites` から削除して再構築
+  - `chrome.permissions.onAdded` / `onRemoved` で Chrome 側から権限が付与/取り消された場合、該当オリジンを `spooferSites` に追加/削除して再構築（権限ダイアログでポップアップが閉じても一覧と偽装が同期される）
   - SPA 遷移は DNR / 注入が自動適用されるため追加処理不要。読み込み済みページは popup の「現在のタブをリロード」で反映
-- **状態管理**: `chrome.storage.local` の `spooferSites`（オリジンの配列、デフォルト空）/ `spooferProfile`（デフォルト `"windows-chrome"`）に保存
-- **権限モデル**: `optional_host_permissions: ["<all_urls>"]`。ポップアップでサイト追加時に `permissions.request({origins:[origin+"/*"]})`（ユーザージェスチャー必須）、削除時に `permissions.remove` で同時取り消し。拡張機能メニューでは未許可時は「サイトへのアクセス時に確認」グループに表示される
+- **状態管理**: `chrome.storage.local` の `spooferSites`（オリジンの配列、デフォルト空）/ `spooferProfile`（デフォルト `"windows-chrome"`）に保存。`chrome.permissions` の付与状態と二重管理し、`onAdded`/`onRemoved` で同期
+- **権限モデル**: `optional_host_permissions: ["<all_urls>"]`。ポップアップでサイト追加時に `permissions.request({origins:[origin+"/*"]})`（ユーザージェスチャー必須）、削除時に `permissions.remove` で同時取り消し。メッセージは `return true` で SW を維持し確実に完了させる。拡張機能メニューでは未許可時は「サイトへのアクセス時に確認」グループに表示される
 
 ## データフロー
 
