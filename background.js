@@ -1,5 +1,6 @@
-const STORAGE_ENABLED = "spooferEnabled";
+const STORAGE_SITES = "spooferSites";
 const STORAGE_PROFILE = "spooferProfile";
+const STORAGE_ENABLED_LEGACY = "spooferEnabled";
 
 const PROFILES = {
   "windows-chrome": {
@@ -38,7 +39,7 @@ const PROFILES = {
 };
 
 const state = {
-  enabled: true,
+  sites: new Set(),
   profile: "windows-chrome",
 };
 
@@ -84,6 +85,27 @@ function isWebUrl(url) {
   return !!url && /^https?:\/\//.test(url);
 }
 
+function getOrigin(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+function isEnabledUrl(url) {
+  const origin = getOrigin(url);
+  return !!origin && state.sites.has(origin);
+}
+
+function sortedSites() {
+  return [...state.sites].sort();
+}
+
+function persistSites() {
+  chrome.storage.local.set({ [STORAGE_SITES]: sortedSites() });
+}
+
 function profileLabels() {
   return Object.fromEntries(
     Object.entries(PROFILES).map(([key, p]) => [key, { label: p.label }])
@@ -115,30 +137,57 @@ async function applyOverride(tabId) {
   }
 }
 
+async function detachTab(tabId) {
+  attachedTabs.delete(tabId);
+  try {
+    await chrome.debugger.detach({ tabId });
+  } catch (e) {
+    console.warn("[Platform Spoofer] detach failed:", e.message || e);
+  }
+}
+
 async function detachAll() {
-  const tabIds = [...attachedTabs];
-  attachedTabs.clear();
-  for (const tabId of tabIds) {
-    try {
-      await chrome.debugger.detach({ tabId });
-    } catch (e) {
-      console.warn("[Platform Spoofer] detach failed:", e.message || e);
+  for (const tabId of [...attachedTabs]) await detachTab(tabId);
+}
+
+async function detachOrigin(origin) {
+  const tabs = await chrome.tabs.query({});
+  for (const tab of tabs) {
+    if (tab.id !== undefined && getOrigin(tab.url) === origin) {
+      await detachTab(tab.id);
+    }
+  }
+}
+
+async function syncAttachedTabs() {
+  const targets = await chrome.debugger.getTargets();
+  for (const t of targets) {
+    if (t.tabId !== undefined && t.attached && isWebUrl(t.url)) {
+      attachedTabs.add(t.tabId);
     }
   }
 }
 
 async function applyToExistingTabs() {
-  if (!state.enabled) return;
   const tabs = await chrome.tabs.query({});
   for (const tab of tabs) {
-    if (tab.id !== undefined && isWebUrl(tab.url)) applyOverride(tab.id);
+    if (tab.id === undefined || !isWebUrl(tab.url)) continue;
+    if (isEnabledUrl(tab.url)) {
+      applyOverride(tab.id);
+    } else if (attachedTabs.has(tab.id)) {
+      detachTab(tab.id);
+    }
   }
 }
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== "loading") return;
-  if (!state.enabled) return;
-  if (isWebUrl(tab.url)) applyOverride(tabId);
+  if (!isWebUrl(tab.url)) return;
+  if (isEnabledUrl(tab.url)) {
+    applyOverride(tabId);
+  } else if (attachedTabs.has(tabId)) {
+    detachTab(tabId);
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -152,42 +201,59 @@ chrome.debugger.onDetach.addListener((source) => {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "getStatus") {
     sendResponse({
-      enabled: state.enabled,
+      sites: sortedSites(),
       profile: state.profile,
       profiles: profileLabels(),
     });
     return;
   }
-  if (msg.type === "setEnabled") {
-    state.enabled = !!msg.enabled;
-    chrome.storage.local.set({ [STORAGE_ENABLED]: state.enabled });
-    if (state.enabled) {
+  if (msg.type === "addSite") {
+    if (typeof msg.origin === "string" && isWebUrl(msg.origin)) {
+      state.sites.add(msg.origin);
+      persistSites();
       applyToExistingTabs();
-    } else {
-      detachAll();
     }
-    sendResponse({ enabled: state.enabled, profile: state.profile });
+    sendResponse({ sites: sortedSites() });
+    return;
+  }
+  if (msg.type === "removeSite") {
+    if (typeof msg.origin === "string" && state.sites.delete(msg.origin)) {
+      persistSites();
+      detachOrigin(msg.origin);
+    }
+    sendResponse({ sites: sortedSites() });
     return;
   }
   if (msg.type === "setProfile") {
     if (PROFILES[msg.profile]) {
       state.profile = msg.profile;
       chrome.storage.local.set({ [STORAGE_PROFILE]: state.profile });
-      if (state.enabled) applyToExistingTabs();
+      applyToExistingTabs();
     }
-    sendResponse({ enabled: state.enabled, profile: state.profile });
+    sendResponse({ sites: sortedSites(), profile: state.profile });
     return;
   }
 });
 
 chrome.runtime.onStartup.addListener(applyToExistingTabs);
-chrome.runtime.onInstalled.addListener(applyToExistingTabs);
 
-chrome.storage.local.get([STORAGE_ENABLED, STORAGE_PROFILE], (res) => {
-  if (typeof res[STORAGE_ENABLED] === "boolean") {
-    state.enabled = res[STORAGE_ENABLED];
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.local.remove(STORAGE_ENABLED_LEGACY);
+  applyToExistingTabs();
+});
+
+async function init() {
+  const res = await chrome.storage.local.get([STORAGE_SITES, STORAGE_PROFILE]);
+  if (Array.isArray(res[STORAGE_SITES])) {
+    for (const site of res[STORAGE_SITES]) {
+      if (typeof site === "string") state.sites.add(site);
+    }
   }
   if (typeof res[STORAGE_PROFILE] === "string" && PROFILES[res[STORAGE_PROFILE]]) {
     state.profile = res[STORAGE_PROFILE];
   }
-});
+  await syncAttachedTabs();
+  applyToExistingTabs();
+}
+
+init();

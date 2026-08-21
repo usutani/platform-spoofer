@@ -11,8 +11,8 @@ Chrome 拡張機能（Manifest V3）、ビルド/テスト/lint ツールなし�
 | ファイル | 役割 |
 |---|---|
 | `manifest.json` | 拡張機能のメタデータ。`version` はセマンティックバージョニングで管理 |
-| `background.js` | Service Worker。`chrome.debugger` でタブに接続し `Emulation.setUserAgentOverride` を送信。http(s) タブを自動検出して適用 |
-| `popup.html` / `popup.js` | ポップアップ。自動適用 ON/OFF、偽装先プロファイル選択、現在のタブのリロード |
+| `background.js` | Service Worker。`chrome.debugger` でタブに接続し `Emulation.setUserAgentOverride` を送信。有効リストのサイトのみ自動適用 |
+| `popup.html` / `popup.js` | ポップアップ。現在のサイトの追加/削除、有効サイト一覧と削除、偽装先プロファイル選択、現在のタブのリロード |
 | `README.md` | セットアップ・動作確認手順 |
 
 ## アーキテクチャ
@@ -22,23 +22,25 @@ Chrome 拡張機能（Manifest V3）、ビルド/テスト/lint ツールなし�
 - **偽装値の生成**:
   - UA 文字列はプロファイルの `ua(ver)` を利用。`ver` は `getChromeVersion()` がサービスワーカーの `navigator.userAgent` から動的取得
   - `userAgentMetadata` は `buildUserAgentMetadata(profile)` が生成。brands / fullVersionList の 3 番目にプロファイルの `brand` を設定（`mobile:false` 固定）
-- **自動適用**:
-  - `chrome.tabs.onUpdated`（status: `"loading"`）で URL が `/^https?:\/\//` にマッチしたら `applyOverride(tabId)` を実行
-  - `chrome.runtime.onStartup` / `onInstalled` で既存の http(s) タブにも適用
+- **サイト単位の適用**:
+  - 「サイト」はオリジン（`new URL(url).origin`、例: `https://example.com`）で判定。パス・クエリは無視、サブドメインは別サイト
+  - `chrome.tabs.onUpdated`（status: `"loading"`）でオリジンが有効リストに含まれれば `applyOverride(tabId)` を実行
+  - 含まれないタブが `attachedTabs` に残っていれば `detach`（偽装済みサイトから別サイトへ遷移した場合の後始末）
+  - `chrome.runtime.onStartup` / `onInstalled` で既存タブにも反映
   - SPA 遷移では debugger がタブに保持されるため、再適用不要（フルリロード時のみ再発火）
-- **トグル / プロファイル切替**: 状態は `chrome.storage.local` の `spooferEnabled` / `spooferProfile`（デフォルト `true` / `"windows-chrome"`）に保存。切替時は既存 http(s) タブに再適用（リロードはしない。読み込み済みページは popup の「現在のタブをリロード」で反映）
-- **後始末**: `chrome.tabs.onRemoved` / `chrome.debugger.onDetach` で `attachedTabs` Set を更新。OFF 切替時は全 `detach`
+- **状態管理**: `chrome.storage.local` の `spooferSites`（オリジンの配列、デフォルト空）/ `spooferProfile`（デフォルト `"windows-chrome"`）に保存。追加/削除/プロファイル切替時は既存タブへ即時反映（リロードはしない。読み込み済みページは popup の「現在のタブをリロード」で反映）
+- **後始末**: サイト削除時は該当オリジンのタブを `detachOrigin` で解除。`chrome.tabs.onRemoved` / `chrome.debugger.onDetach` で `attachedTabs` Set を更新。Service Worker 再起動で Set が失われるため、起動時に `syncAttachedTabs()`（`chrome.debugger.getTargets`）で復元する
 
 ## データフロー
 
 ```
 popup.js
-  → chrome.runtime.sendMessage({type:"getStatus" | "setEnabled" | "setProfile"})
-  → background.js → chrome.storage.local に保存 → 既存 http(s) タブへ再適用
+  → chrome.runtime.sendMessage({type:"getStatus" | "addSite" | "removeSite" | "setProfile"})
+  → background.js → chrome.storage.local に保存 → 既存タブへ再適用 / 該当タブを detach
 
 http(s) タブ
   → chrome.tabs.onUpdated (loading)
-  → applyOverride(tabId)
+  → オリジンが有効リストに含まれれば applyOverride(tabId) / 含まれなければ detach
       → chrome.debugger.attach → Emulation.setUserAgentOverride
 ```
 

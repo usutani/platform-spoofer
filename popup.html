@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <style>
     body {
-      width: 240px;
+      width: 280px;
       margin: 0;
       padding: 12px;
       font-family: sans-serif;
@@ -13,10 +13,16 @@
       font-size: 14px;
       margin: 0 0 10px;
     }
+    h2 {
+      font-size: 12px;
+      color: #444;
+      margin: 12px 0 4px;
+    }
     .row {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 8px;
       margin-bottom: 8px;
     }
     label {
@@ -24,32 +30,64 @@
     }
     select {
       font-size: 13px;
+      max-width: 170px;
+    }
+    .site-name {
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     button {
+      padding: 4px 10px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    #toggle-current {
+      min-width: 56px;
+    }
+    ul {
+      list-style: none;
+      margin: 0 0 8px;
+      padding: 0;
+      max-height: 140px;
+      overflow-y: auto;
+    }
+    li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 3px 0;
+    }
+    li .site-name {
+      flex: 1;
+    }
+    li.empty {
+      font-size: 12px;
+      color: #999;
+    }
+    #reload {
       width: 100%;
       margin-top: 4px;
       padding: 6px 0;
       font-size: 13px;
-    }
-    .status {
-      font-size: 12px;
-      color: #666;
-      margin-top: 10px;
     }
   </style>
 </head>
 <body>
   <h1>Platform Spoofer</h1>
   <div class="row">
-    <label for="toggle">自動適用</label>
-    <input type="checkbox" id="toggle">
+    <span class="site-name" id="current-site"></span>
+    <button id="toggle-current">追加</button>
   </div>
   <div class="row">
     <label for="profile">偽装先</label>
     <select id="profile"></select>
   </div>
+  <h2>有効なサイト</h2>
+  <ul id="site-list"></ul>
   <button id="reload">現在のタブをリロード</button>
-  <div class="status" id="status"></div>
   <script src="popup.js"></script>
 </body>
 </html>

@@ -1,7 +1,21 @@
-const toggle = document.getElementById("toggle");
+const currentSiteEl = document.getElementById("current-site");
+const toggleCurrentBtn = document.getElementById("toggle-current");
 const profileSelect = document.getElementById("profile");
+const siteListEl = document.getElementById("site-list");
 const reloadBtn = document.getElementById("reload");
-const statusEl = document.getElementById("status");
+
+let sites = [];
+let currentOrigin = null;
+
+function normalizeOrigin(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "http:" || u.protocol === "https:") return u.origin;
+  } catch {
+    return null;
+  }
+  return null;
+}
 
 function populateProfiles(profiles, current) {
   profileSelect.innerHTML = "";
@@ -14,37 +28,78 @@ function populateProfiles(profiles, current) {
   profileSelect.value = current;
 }
 
-function updateStatus(enabled) {
-  statusEl.textContent = enabled
-    ? "有効（http(s) タブに自動適用中）"
-    : "無効（実環境に戻ります）";
+function renderCurrentSite() {
+  const included = !!currentOrigin && sites.includes(currentOrigin);
+  if (!currentOrigin) {
+    currentSiteEl.textContent = "（対象外のページ）";
+    toggleCurrentBtn.disabled = true;
+    toggleCurrentBtn.textContent = "追加";
+    return;
+  }
+  currentSiteEl.textContent = currentOrigin;
+  currentSiteEl.title = currentOrigin;
+  toggleCurrentBtn.disabled = false;
+  toggleCurrentBtn.textContent = included ? "削除" : "追加";
 }
 
-chrome.runtime.sendMessage({ type: "getStatus" }, (res) => {
-  if (chrome.runtime.lastError) return;
-  toggle.checked = res.enabled;
-  populateProfiles(res.profiles, res.profile);
-  updateStatus(res.enabled);
+function renderSiteList() {
+  siteListEl.innerHTML = "";
+  if (sites.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "なし";
+    siteListEl.appendChild(li);
+    return;
+  }
+  for (const origin of sites) {
+    const li = document.createElement("li");
+    const span = document.createElement("span");
+    span.className = "site-name";
+    span.textContent = origin;
+    span.title = origin;
+    const btn = document.createElement("button");
+    btn.textContent = "削除";
+    btn.addEventListener("click", () => removeSite(origin));
+    li.appendChild(span);
+    li.appendChild(btn);
+    siteListEl.appendChild(li);
+  }
+}
+
+function refresh(res) {
+  if (!res) return;
+  sites = res.sites || [];
+  if (res.profile && res.profiles) populateProfiles(res.profiles, res.profile);
+  renderSiteList();
+  renderCurrentSite();
+}
+
+function send(msg, cb) {
+  chrome.runtime.sendMessage(msg, (res) => {
+    if (chrome.runtime.lastError) return;
+    if (cb) cb(res);
+  });
+}
+
+function removeSite(origin) {
+  send({ type: "removeSite", origin }, refresh);
+}
+
+send({ type: "getStatus" }, refresh);
+
+chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+  currentOrigin = tab ? normalizeOrigin(tab.url) : null;
+  renderCurrentSite();
 });
 
-toggle.addEventListener("change", () => {
-  chrome.runtime.sendMessage(
-    { type: "setEnabled", enabled: toggle.checked },
-    (res) => {
-      if (chrome.runtime.lastError) return;
-      updateStatus(res.enabled);
-    }
-  );
+toggleCurrentBtn.addEventListener("click", () => {
+  if (!currentOrigin) return;
+  const type = sites.includes(currentOrigin) ? "removeSite" : "addSite";
+  send({ type, origin: currentOrigin }, refresh);
 });
 
 profileSelect.addEventListener("change", () => {
-  chrome.runtime.sendMessage(
-    { type: "setProfile", profile: profileSelect.value },
-    (res) => {
-      if (chrome.runtime.lastError) return;
-      updateStatus(res.enabled);
-    }
-  );
+  send({ type: "setProfile", profile: profileSelect.value });
 });
 
 reloadBtn.addEventListener("click", async () => {
