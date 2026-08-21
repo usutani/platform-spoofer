@@ -220,38 +220,58 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return;
   }
   if (msg.type === "addSite") {
-    if (typeof msg.origin === "string" && isWebUrl(msg.origin)) {
-      state.sites.add(msg.origin);
-      persistSites();
-      rebuildAll();
-    }
-    sendResponse({ sites: sortedSites() });
-    return;
+    (async () => {
+      if (typeof msg.origin === "string" && isWebUrl(msg.origin)) {
+        state.sites.add(msg.origin);
+        persistSites();
+        await rebuildAll();
+      }
+      sendResponse({ sites: sortedSites() });
+    })();
+    return true;
   }
   if (msg.type === "removeSite") {
-    if (typeof msg.origin === "string" && state.sites.delete(msg.origin)) {
-      persistSites();
-      rebuildAll();
-      (async () => {
+    (async () => {
+      if (typeof msg.origin === "string" && state.sites.delete(msg.origin)) {
+        persistSites();
+        await rebuildAll();
         for (const pattern of permissionPatternsForOrigin(msg.origin)) {
           try {
             const removed = await chrome.permissions.remove({ origins: [pattern] });
             if (removed) break;
           } catch {}
         }
-      })();
-    }
-    sendResponse({ sites: sortedSites() });
-    return;
+      }
+      sendResponse({ sites: sortedSites() });
+    })();
+    return true;
   }
   if (msg.type === "setProfile") {
-    if (PROFILES[msg.profile]) {
-      state.profile = msg.profile;
-      chrome.storage.local.set({ [STORAGE_PROFILE]: state.profile });
-      rebuildAll();
+    (async () => {
+      if (PROFILES[msg.profile]) {
+        state.profile = msg.profile;
+        chrome.storage.local.set({ [STORAGE_PROFILE]: state.profile });
+        await rebuildAll();
+      }
+      sendResponse({ sites: sortedSites(), profile: state.profile });
+    })();
+    return true;
+  }
+});
+
+chrome.permissions.onAdded.addListener(async (perms) => {
+  if (!perms.origins || perms.origins.length === 0) return;
+  let changed = false;
+  for (const pattern of perms.origins) {
+    const origin = patternToOrigin(pattern);
+    if (origin && isWebUrl(origin) && !state.sites.has(origin)) {
+      state.sites.add(origin);
+      changed = true;
     }
-    sendResponse({ sites: sortedSites(), profile: state.profile });
-    return;
+  }
+  if (changed) {
+    persistSites();
+    await rebuildAll();
   }
 });
 
