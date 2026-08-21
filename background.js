@@ -5,80 +5,28 @@ const STORAGE_ENABLED_LEGACY = "spooferEnabled";
 const PROFILES = {
   "windows-chrome": {
     label: "Windows / Chrome",
-    platform: "Win32",
-    brand: "Google Chrome",
-    platformName: "Windows",
-    platformVersion: "15.0.0",
-    architecture: "x86",
-    bitness: "64",
-    ua: (ver) =>
-      `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${ver}.0.0.0 Safari/537.36`,
+    file: "profiles/windows-chrome.js",
   },
   "macos-chrome": {
     label: "macOS / Chrome",
-    platform: "MacIntel",
-    brand: "Google Chrome",
-    platformName: "macOS",
-    platformVersion: "13.0.0",
-    architecture: "x86",
-    bitness: "64",
-    ua: (ver) =>
-      `Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${ver}.0.0.0 Safari/537.36`,
+    file: "profiles/macos-chrome.js",
   },
   "windows-edge": {
     label: "Windows / Edge",
-    platform: "Win32",
-    brand: "Microsoft Edge",
-    platformName: "Windows",
-    platformVersion: "15.0.0",
-    architecture: "x86",
-    bitness: "64",
-    ua: (ver) =>
-      `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${ver}.0.0.0 Safari/537.36 Edg/${ver}.0.0.0`,
+    file: "profiles/windows-edge.js",
   },
 };
+
+const SCRIPT_ID = "ps-spoof";
 
 const state = {
   sites: new Set(),
   profile: "windows-chrome",
 };
 
-const attachedTabs = new Set();
-
 function getChromeVersion() {
   const m = navigator.userAgent.match(/Chrome\/(\d+)/);
   return m ? m[1] : "138";
-}
-
-function getProfile() {
-  return PROFILES[state.profile] || PROFILES["windows-chrome"];
-}
-
-function buildUserAgent(profile) {
-  return profile.ua(getChromeVersion());
-}
-
-function buildUserAgentMetadata(profile) {
-  const ver = getChromeVersion();
-  return {
-    brands: [
-      { brand: "Not)A;Brand", version: "99" },
-      { brand: "Chromium", version: ver },
-      { brand: profile.brand, version: ver },
-    ],
-    fullVersionList: [
-      { brand: "Not)A;Brand", version: "99.0.0.0" },
-      { brand: "Chromium", version: `${ver}.0.0.0` },
-      { brand: profile.brand, version: `${ver}.0.0.0` },
-    ],
-    fullVersion: `${ver}.0.0.0`,
-    platform: profile.platformName,
-    platformVersion: profile.platformVersion,
-    architecture: profile.architecture,
-    bitness: profile.bitness,
-    model: "",
-    mobile: false,
-  };
 }
 
 function isWebUrl(url) {
@@ -91,11 +39,6 @@ function getOrigin(url) {
   } catch {
     return null;
   }
-}
-
-function isEnabledUrl(url) {
-  const origin = getOrigin(url);
-  return !!origin && state.sites.has(origin);
 }
 
 function sortedSites() {
@@ -112,91 +55,160 @@ function profileLabels() {
   );
 }
 
-async function applyOverride(tabId) {
-  const profile = getProfile();
+function patternToOrigin(pattern) {
   try {
-    if (!attachedTabs.has(tabId)) {
-      try {
-        await chrome.debugger.attach({ tabId }, "1.3");
-        attachedTabs.add(tabId);
-      } catch (e) {
-        console.warn("[Platform Spoofer] attach failed:", e.message || e);
-      }
+    if (pattern.endsWith("/*")) pattern = pattern.slice(0, -2);
+    return new URL(pattern).origin;
+  } catch {
+    return null;
+  }
+}
+
+function permissionPatternsForOrigin(origin) {
+  try {
+    const u = new URL(origin);
+    const withPort = `${origin}/*`;
+    const withoutPort = `${u.protocol}//${u.hostname}/*`;
+    if (withPort === withoutPort) return [withPort];
+    return [withPort, withoutPort];
+  } catch {
+    return [`${origin}/*`];
+  }
+}
+
+async function loadProfileConfig(key) {
+  const entry = PROFILES[key] || PROFILES["windows-chrome"];
+  try {
+    const url = chrome.runtime.getURL(entry.file);
+    const res = await fetch(url);
+    const text = await res.text();
+    const m = text.match(/self\.__PS_PROFILE__\s*=\s*(\{[\s\S]*?\});/);
+    if (m) {
+      const cfg = Function(`"use strict"; return (${m[1]});`)();
+      return cfg;
     }
-    await chrome.debugger.sendCommand(
-      { tabId },
-      "Emulation.setUserAgentOverride",
+  } catch (e) {
+    console.warn("[Platform Spoofer] loadProfileConfig failed:", e.message || e);
+  }
+  return {
+    ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{V}.0.0.0 Safari/537.36",
+    platform: "Win32",
+    vendor: "Google Inc.",
+    brandList: [
+      ["Not)A;Brand", "99"],
+      ["Chromium", "{V}"],
+      ["Google Chrome", "{V}"],
+    ],
+    mobile: false,
+    platformName: "Windows",
+    platformVersion: "15.0.0",
+    architecture: "x86",
+    bitness: "64",
+    model: "",
+  };
+}
+
+function buildSpoofValues(cfg) {
+  const ver = getChromeVersion();
+  const fullVer = `${ver}.0.0.0`;
+  const sub = (s) => String(s).replaceAll("{V}", ver);
+  const userAgent = sub(cfg.ua);
+  const brands = cfg.brandList.map(([brand, v]) => ({
+    brand,
+    version: sub(v),
+  }));
+  const fullVersionList = cfg.brandList.map(([brand, v]) => ({
+    brand,
+    version: v === "{V}" ? fullVer : sub(v),
+  }));
+  return { userAgent, brands, fullVersionList, cfg, ver, fullVer };
+}
+
+async function rebuildRules(sites, cfg) {
+  const { userAgent, brands, fullVersionList, cfg: c } = buildSpoofValues(cfg);
+
+  const chUa = brands.map((b) => `"${b.brand}";v="${b.version}"`).join(", ");
+  const chFull = fullVersionList
+    .map((b) => `"${b.brand}";v="${b.version}"`)
+    .join(", ");
+
+  const existing = await chrome.declarativeNetRequest.getDynamicRules();
+  const removeRuleIds = existing.map((r) => r.id);
+
+  if (sites.length === 0) {
+    if (removeRuleIds.length)
+      await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules: [] });
+    return;
+  }
+
+  const addRules = sites.map((origin, i) => {
+    let hostname;
+    try {
+      hostname = new URL(origin).hostname;
+    } catch {
+      hostname = origin;
+    }
+    return {
+      id: i + 1,
+      priority: 1,
+      action: {
+        type: "modifyHeaders",
+        requestHeaders: [
+          { header: "User-Agent", operation: "set", value: userAgent },
+          { header: "Sec-CH-UA", operation: "set", value: chUa },
+          { header: "Sec-CH-UA-Mobile", operation: "set", value: c.mobile ? "?1" : "?0" },
+          { header: "Sec-CH-UA-Platform", operation: "set", value: `"${c.platformName}"` },
+          {
+            header: "Sec-CH-UA-Full-Version-List",
+            operation: "set",
+            value: chFull,
+          },
+        ],
+      },
+      condition: {
+        requestDomains: [hostname],
+      },
+    };
+  });
+
+  await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules });
+}
+
+async function rebuildContentScripts(sites, profileKey) {
+  const entry = PROFILES[profileKey] || PROFILES["windows-chrome"];
+  const registered = await chrome.scripting.getRegisteredContentScripts();
+  const exists = registered.some((s) => s.id === SCRIPT_ID);
+  if (exists) {
+    try {
+      await chrome.scripting.unregisterContentScripts({ ids: [SCRIPT_ID] });
+    } catch (e) {
+      console.warn("[Platform Spoofer] unregister failed:", e.message || e);
+    }
+  }
+  if (sites.length === 0) return;
+  try {
+    await chrome.scripting.registerContentScripts([
       {
-        userAgent: buildUserAgent(profile),
-        platform: profile.platform,
-        userAgentMetadata: buildUserAgentMetadata(profile),
-      }
-    );
+        id: SCRIPT_ID,
+        matches: sites.map((o) => `${o}/*`),
+        js: [entry.file, "spoof.js"],
+        runAt: "document_start",
+        allFrames: true,
+        world: "MAIN",
+        persistAcrossSessions: true,
+      },
+    ]);
   } catch (e) {
-    console.warn("[Platform Spoofer] applyOverride failed:", e.message || e);
+    console.warn("[Platform Spoofer] registerContentScripts failed:", e.message || e);
   }
 }
 
-async function detachTab(tabId) {
-  attachedTabs.delete(tabId);
-  try {
-    await chrome.debugger.detach({ tabId });
-  } catch (e) {
-    console.warn("[Platform Spoofer] detach failed:", e.message || e);
-  }
+async function rebuildAll() {
+  const sites = sortedSites();
+  const cfg = await loadProfileConfig(state.profile);
+  await rebuildRules(sites, cfg);
+  await rebuildContentScripts(sites, state.profile);
 }
-
-async function detachAll() {
-  for (const tabId of [...attachedTabs]) await detachTab(tabId);
-}
-
-async function detachOrigin(origin) {
-  const tabs = await chrome.tabs.query({});
-  for (const tab of tabs) {
-    if (tab.id !== undefined && getOrigin(tab.url) === origin) {
-      await detachTab(tab.id);
-    }
-  }
-}
-
-async function syncAttachedTabs() {
-  const targets = await chrome.debugger.getTargets();
-  for (const t of targets) {
-    if (t.tabId !== undefined && t.attached && isWebUrl(t.url)) {
-      attachedTabs.add(t.tabId);
-    }
-  }
-}
-
-async function applyToExistingTabs() {
-  const tabs = await chrome.tabs.query({});
-  for (const tab of tabs) {
-    if (tab.id === undefined || !isWebUrl(tab.url)) continue;
-    if (isEnabledUrl(tab.url)) {
-      applyOverride(tab.id);
-    } else if (attachedTabs.has(tab.id)) {
-      detachTab(tab.id);
-    }
-  }
-}
-
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== "loading") return;
-  if (!isWebUrl(tab.url)) return;
-  if (isEnabledUrl(tab.url)) {
-    applyOverride(tabId);
-  } else if (attachedTabs.has(tabId)) {
-    detachTab(tabId);
-  }
-});
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-  attachedTabs.delete(tabId);
-});
-
-chrome.debugger.onDetach.addListener((source) => {
-  if (source.tabId !== undefined) attachedTabs.delete(source.tabId);
-});
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "getStatus") {
@@ -211,7 +223,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (typeof msg.origin === "string" && isWebUrl(msg.origin)) {
       state.sites.add(msg.origin);
       persistSites();
-      applyToExistingTabs();
+      rebuildAll();
     }
     sendResponse({ sites: sortedSites() });
     return;
@@ -219,7 +231,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "removeSite") {
     if (typeof msg.origin === "string" && state.sites.delete(msg.origin)) {
       persistSites();
-      detachOrigin(msg.origin);
+      rebuildAll();
+      (async () => {
+        for (const pattern of permissionPatternsForOrigin(msg.origin)) {
+          try {
+            const removed = await chrome.permissions.remove({ origins: [pattern] });
+            if (removed) break;
+          } catch {}
+        }
+      })();
     }
     sendResponse({ sites: sortedSites() });
     return;
@@ -228,18 +248,31 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (PROFILES[msg.profile]) {
       state.profile = msg.profile;
       chrome.storage.local.set({ [STORAGE_PROFILE]: state.profile });
-      applyToExistingTabs();
+      rebuildAll();
     }
     sendResponse({ sites: sortedSites(), profile: state.profile });
     return;
   }
 });
 
-chrome.runtime.onStartup.addListener(applyToExistingTabs);
+chrome.permissions.onRemoved.addListener(async (perms) => {
+  if (!perms.origins || perms.origins.length === 0) return;
+  let changed = false;
+  for (const pattern of perms.origins) {
+    const origin = patternToOrigin(pattern);
+    if (origin && state.sites.delete(origin)) changed = true;
+  }
+  if (changed) {
+    persistSites();
+    await rebuildAll();
+  }
+});
+
+chrome.runtime.onStartup.addListener(rebuildAll);
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.remove(STORAGE_ENABLED_LEGACY);
-  applyToExistingTabs();
+  rebuildAll();
 });
 
 async function init() {
@@ -252,8 +285,7 @@ async function init() {
   if (typeof res[STORAGE_PROFILE] === "string" && PROFILES[res[STORAGE_PROFILE]]) {
     state.profile = res[STORAGE_PROFILE];
   }
-  await syncAttachedTabs();
-  applyToExistingTabs();
+  await rebuildAll();
 }
 
 init();
