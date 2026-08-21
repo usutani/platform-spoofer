@@ -94,8 +94,16 @@ chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
 
 toggleCurrentBtn.addEventListener("click", () => {
   if (!currentOrigin) return;
-  const type = sites.includes(currentOrigin) ? "removeSite" : "addSite";
-  send({ type, origin: currentOrigin }, refresh);
+  const isIncluded = sites.includes(currentOrigin);
+  if (isIncluded) {
+    send({ type: "removeSite", origin: currentOrigin }, refresh);
+  } else {
+    chrome.permissions.request({ origins: [`${currentOrigin}/*`] }, (granted) => {
+      if (chrome.runtime.lastError) return;
+      if (!granted) return;
+      send({ type: "addSite", origin: currentOrigin }, refresh);
+    });
+  }
 });
 
 profileSelect.addEventListener("change", () => {
