@@ -3,9 +3,12 @@ const toggleCurrentBtn = document.getElementById("toggle-current");
 const profileSelect = document.getElementById("profile");
 const siteListEl = document.getElementById("site-list");
 const reloadBtn = document.getElementById("reload");
+const scopeNoteEl = document.getElementById("scope-note");
+const scopeRadios = document.querySelectorAll('input[name="scope"]');
 
 let sites = [];
 let currentOrigin = null;
+let allSites = false;
 
 function normalizeOrigin(url) {
   try {
@@ -38,8 +41,17 @@ function renderCurrentSite() {
   }
   currentSiteEl.textContent = currentOrigin;
   currentSiteEl.title = currentOrigin;
-  toggleCurrentBtn.disabled = false;
+  toggleCurrentBtn.disabled = allSites;
   toggleCurrentBtn.textContent = included ? "削除" : "追加";
+}
+
+function renderScope() {
+  for (const radio of scopeRadios) {
+    radio.checked = radio.value === (allSites ? "all" : "sites");
+  }
+  scopeNoteEl.textContent = allSites
+    ? "すべてのサイトに適用中（指定したサイトの追加・削除は無効）"
+    : "";
 }
 
 function renderSiteList() {
@@ -59,6 +71,7 @@ function renderSiteList() {
     span.title = origin;
     const btn = document.createElement("button");
     btn.textContent = "削除";
+    btn.disabled = allSites;
     btn.addEventListener("click", () => removeSite(origin));
     li.appendChild(span);
     li.appendChild(btn);
@@ -69,7 +82,9 @@ function renderSiteList() {
 function refresh(res) {
   if (!res) return;
   sites = res.sites || [];
+  allSites = !!res.allSites;
   if (res.profile && res.profiles) populateProfiles(res.profiles, res.profile);
+  renderScope();
   renderSiteList();
   renderCurrentSite();
 }
@@ -83,6 +98,27 @@ function send(msg, cb) {
 
 function removeSite(origin) {
   send({ type: "removeSite", origin }, refresh);
+}
+
+function setMode(mode) {
+  if (mode === "all") {
+    chrome.permissions.request({ origins: ["<all_urls>"] }, (granted) => {
+      if (chrome.runtime.lastError) return;
+      if (!granted) {
+        send({ type: "getStatus" }, refresh);
+        return;
+      }
+      send({ type: "setMode", mode: "all" }, refresh);
+    });
+  } else {
+    send({ type: "setMode", mode: "sites" }, refresh);
+  }
+}
+
+for (const radio of scopeRadios) {
+  radio.addEventListener("change", () => {
+    if (radio.checked) setMode(radio.value);
+  });
 }
 
 send({ type: "getStatus" }, refresh);

@@ -31,17 +31,24 @@ Chrome 拡張機能（Manifest V3）、ビルド/テスト/lint ツールなし�
   - 追加/削除/プロファイル切替時に `rebuildAll()`（`rebuildRules` + `rebuildContentScripts`）で DNR 動的ルールと登録済みコンテンツスクリプトを再構築
   - `chrome.permissions.onAdded` / `onRemoved` で Chrome 側から権限が付与/取り消された場合、該当オリジンを `spooferSites` に追加/削除して再構築（権限ダイアログでポップアップが閉じても一覧と偽装が同期される）
   - SPA 遷移は DNR / 注入が自動適用されるため追加処理不要。読み込み済みページは popup の「現在のタブをリロード」で反映
-- **状態管理**: `chrome.storage.local` の `spooferSites`（オリジンの配列、デフォルト空）/ `spooferProfile`（デフォルト `"windows-chrome"`）に保存。`chrome.permissions` の付与状態と二重管理し、`onAdded`/`onRemoved` で同期
+- **適用範囲モード（sites / all）**:
+  - ポップアップの「適用範囲」で「指定したサイトのみ（`sites`）」と「すべてのサイト（`all`）」を切り替え。両モードは排他
+  - `sites` モード: 既存の `spooferSites` リストのみに適用（デフォルト）
+  - `all` モード: `<all_urls>` のホスト権限を `permissions.request` で要求。許可されると DNR ルールを `condition: {}`（全ドメイン対象）で、コンテンツスクリプトを `matches: ["<all_urls>"]` で適用。`spooferSites` リストは保持され、`sites` へ戻した時に復帰
+  - `all` → `sites` に戻す際、`<all_urls>` の権限を `permissions.remove` で取り消す（`spooferSites` の個別権限は残る）
+  - `chrome.permissions.onRemoved` で `<all_urls>` が外部で取り消された場合、`all` モードから `sites` モードへ自動復帰
+- **状態管理**: `chrome.storage.local` の `spooferSites`（オリジンの配列、デフォルト空）/ `spooferProfile`（デフォルト `"windows-chrome"`）/ `spooferAllSites`（ブール、デフォルト `false`）に保存。`chrome.permissions` の付与状態と二重管理し、`onAdded`/`onRemoved` で同期
 - **権限モデル**: `optional_host_permissions: ["<all_urls>"]`。ポップアップでサイト追加時に `permissions.request({origins:[origin+"/*"]})`（ユーザージェスチャー必須）、削除時に `permissions.remove` で同時取り消し。メッセージは `return true` で SW を維持し確実に完了させる。拡張機能メニューでは未許可時は「サイトへのアクセス時に確認」グループに表示される
 
 ## データフロー
 
 ```
 popup.js
-  → chrome.permissions.request({origins:[origin+"/*"]})  // 追加時のみ
-  → chrome.runtime.sendMessage({type:"getStatus" | "addSite" | "removeSite" | "setProfile"})
+  → chrome.permissions.request({origins:[origin+"/*"]})  // サイト追加時のみ
+  → chrome.permissions.request({origins:["<all_urls>"]})  // 適用範囲を「すべてのサイト」にした時のみ
+  → chrome.runtime.sendMessage({type:"getStatus" | "addSite" | "removeSite" | "setMode" | "setProfile"})
   → background.js → chrome.storage.local に保存 → rebuildAll()
-      → declarativeNetRequest.updateDynamicRules  // ヘッダ
+      → declarativeNetRequest.updateDynamicRules  // ヘッダ（all モードは condition:{} で全ドメイン）
       → scripting.registerContentScripts          // JS (profiles/<profile>.js + spoof.js)
 
 http(s) タブ（有効サイト）

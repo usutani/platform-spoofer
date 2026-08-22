@@ -1,6 +1,8 @@
 const STORAGE_SITES = "spooferSites";
 const STORAGE_PROFILE = "spooferProfile";
+const STORAGE_ALL = "spooferAllSites";
 const STORAGE_ENABLED_LEGACY = "spooferEnabled";
+const ALL_URLS = "<all_urls>";
 
 const PROFILES = {
   "windows-chrome": {
@@ -22,6 +24,7 @@ const SCRIPT_ID = "ps-spoof";
 const state = {
   sites: new Set(),
   profile: "windows-chrome",
+  allSites: false,
 };
 
 function getChromeVersion() {
@@ -47,6 +50,10 @@ function sortedSites() {
 
 function persistSites() {
   chrome.storage.local.set({ [STORAGE_SITES]: sortedSites() });
+}
+
+function persistAllSites() {
+  chrome.storage.local.set({ [STORAGE_ALL]: state.allSites });
 }
 
 function profileLabels() {
@@ -112,7 +119,7 @@ function buildSpoofValues(cfg) {
   return { userAgent, brands, fullVersionList, cfg, ver, fullVer };
 }
 
-async function rebuildRules(sites, cfg) {
+async function rebuildRules(sites, cfg, allSites) {
   const { userAgent, brands, fullVersionList, cfg: c } = buildSpoofValues(cfg);
 
   const chUa = brands.map((b) => `"${b.brand}";v="${b.version}"`).join(", ");
@@ -123,46 +130,71 @@ async function rebuildRules(sites, cfg) {
   const existing = await chrome.declarativeNetRequest.getDynamicRules();
   const removeRuleIds = existing.map((r) => r.id);
 
-  if (sites.length === 0) {
+  if (sites.length === 0 && !allSites) {
     if (removeRuleIds.length)
       await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules: [] });
     return;
   }
 
-  const addRules = sites.map((origin, i) => {
-    let hostname;
-    try {
-      hostname = new URL(origin).hostname;
-    } catch {
-      hostname = origin;
-    }
-    return {
-      id: i + 1,
-      priority: 1,
-      action: {
-        type: "modifyHeaders",
-        requestHeaders: [
-          { header: "User-Agent", operation: "set", value: userAgent },
-          { header: "Sec-CH-UA", operation: "set", value: chUa },
-          { header: "Sec-CH-UA-Mobile", operation: "set", value: c.mobile ? "?1" : "?0" },
-          { header: "Sec-CH-UA-Platform", operation: "set", value: `"${c.platformName}"` },
-          {
-            header: "Sec-CH-UA-Full-Version-List",
-            operation: "set",
-            value: chFull,
-          },
-        ],
+  let addRules;
+  if (allSites) {
+    addRules = [
+      {
+        id: 1,
+        priority: 1,
+        action: {
+          type: "modifyHeaders",
+          requestHeaders: [
+            { header: "User-Agent", operation: "set", value: userAgent },
+            { header: "Sec-CH-UA", operation: "set", value: chUa },
+            { header: "Sec-CH-UA-Mobile", operation: "set", value: c.mobile ? "?1" : "?0" },
+            { header: "Sec-CH-UA-Platform", operation: "set", value: `"${c.platformName}"` },
+            {
+              header: "Sec-CH-UA-Full-Version-List",
+              operation: "set",
+              value: chFull,
+            },
+          ],
+        },
+        condition: {},
       },
-      condition: {
-        requestDomains: [hostname],
-      },
-    };
-  });
+    ];
+  } else {
+    addRules = sites.map((origin, i) => {
+      let hostname;
+      try {
+        hostname = new URL(origin).hostname;
+      } catch {
+        hostname = origin;
+      }
+      return {
+        id: i + 1,
+        priority: 1,
+        action: {
+          type: "modifyHeaders",
+          requestHeaders: [
+            { header: "User-Agent", operation: "set", value: userAgent },
+            { header: "Sec-CH-UA", operation: "set", value: chUa },
+            { header: "Sec-CH-UA-Mobile", operation: "set", value: c.mobile ? "?1" : "?0" },
+            { header: "Sec-CH-UA-Platform", operation: "set", value: `"${c.platformName}"` },
+            {
+              header: "Sec-CH-UA-Full-Version-List",
+              operation: "set",
+              value: chFull,
+            },
+          ],
+        },
+        condition: {
+          requestDomains: [hostname],
+        },
+      };
+    });
+  }
 
   await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules });
 }
 
-async function rebuildContentScripts(sites, profileKey) {
+async function rebuildContentScripts(sites, profileKey, allSites) {
   const entry = PROFILES[profileKey] || PROFILES["windows-chrome"];
   const registered = await chrome.scripting.getRegisteredContentScripts();
   const exists = registered.some((s) => s.id === SCRIPT_ID);
@@ -173,12 +205,13 @@ async function rebuildContentScripts(sites, profileKey) {
       console.warn("[Platform Spoofer] unregister failed:", e.message || e);
     }
   }
-  if (sites.length === 0) return;
+  if (!allSites && sites.length === 0) return;
+  const matches = allSites ? [ALL_URLS] : sites.map((o) => `${o}/*`);
   try {
     await chrome.scripting.registerContentScripts([
       {
         id: SCRIPT_ID,
-        matches: sites.map((o) => `${o}/*`),
+        matches,
         js: [entry.file, "spoof.js"],
         runAt: "document_start",
         allFrames: true,
@@ -194,8 +227,8 @@ async function rebuildContentScripts(sites, profileKey) {
 async function rebuildAll() {
   const sites = sortedSites();
   const cfg = await loadProfileConfig(state.profile);
-  await rebuildRules(sites, cfg);
-  await rebuildContentScripts(sites, state.profile);
+  await rebuildRules(sites, cfg, state.allSites);
+  await rebuildContentScripts(sites, state.profile, state.allSites);
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -204,6 +237,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sites: sortedSites(),
       profile: state.profile,
       profiles: profileLabels(),
+      allSites: state.allSites,
     });
     return;
   }
@@ -214,7 +248,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         persistSites();
         await rebuildAll();
       }
-      sendResponse({ sites: sortedSites() });
+      sendResponse({ sites: sortedSites(), allSites: state.allSites });
     })();
     return true;
   }
@@ -236,7 +270,27 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           console.warn("[Platform Spoofer] remove permission failed:", e.message || e);
         }
       }
-      sendResponse({ sites: sortedSites() });
+      sendResponse({ sites: sortedSites(), allSites: state.allSites });
+    })();
+    return true;
+  }
+  if (msg.type === "setMode") {
+    (async () => {
+      if (msg.mode === "all") {
+        state.allSites = true;
+        persistAllSites();
+        await rebuildAll();
+      } else if (msg.mode === "sites") {
+        state.allSites = false;
+        persistAllSites();
+        await rebuildAll();
+        try {
+          await chrome.permissions.remove({ origins: [ALL_URLS] });
+        } catch (e) {
+          console.warn("[Platform Spoofer] remove all-urls permission failed:", e.message || e);
+        }
+      }
+      sendResponse({ sites: sortedSites(), allSites: state.allSites });
     })();
     return true;
   }
@@ -247,7 +301,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         chrome.storage.local.set({ [STORAGE_PROFILE]: state.profile });
         await rebuildAll();
       }
-      sendResponse({ sites: sortedSites(), profile: state.profile });
+      sendResponse({ sites: sortedSites(), profile: state.profile, allSites: state.allSites });
     })();
     return true;
   }
@@ -257,6 +311,14 @@ chrome.permissions.onAdded.addListener(async (perms) => {
   if (!perms.origins || perms.origins.length === 0) return;
   let changed = false;
   for (const pattern of perms.origins) {
+    if (pattern === ALL_URLS) {
+      if (!state.allSites) {
+        state.allSites = true;
+        persistAllSites();
+        changed = true;
+      }
+      continue;
+    }
     const origin = patternToOrigin(pattern);
     if (origin && isWebUrl(origin) && !state.sites.has(origin)) {
       state.sites.add(origin);
@@ -273,6 +335,12 @@ chrome.permissions.onRemoved.addListener(async (perms) => {
   if (!perms.origins || perms.origins.length === 0) return;
   let changed = false;
   for (const pattern of perms.origins) {
+    if (pattern === ALL_URLS && state.allSites) {
+      state.allSites = false;
+      persistAllSites();
+      changed = true;
+      continue;
+    }
     const origin = patternToOrigin(pattern);
     if (origin && state.sites.delete(origin)) changed = true;
   }
@@ -290,7 +358,7 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 async function init() {
-  const res = await chrome.storage.local.get([STORAGE_SITES, STORAGE_PROFILE]);
+  const res = await chrome.storage.local.get([STORAGE_SITES, STORAGE_PROFILE, STORAGE_ALL]);
   if (Array.isArray(res[STORAGE_SITES])) {
     for (const site of res[STORAGE_SITES]) {
       if (typeof site === "string") state.sites.add(site);
@@ -299,6 +367,7 @@ async function init() {
   if (typeof res[STORAGE_PROFILE] === "string" && PROFILES[res[STORAGE_PROFILE]]) {
     state.profile = res[STORAGE_PROFILE];
   }
+  if (res[STORAGE_ALL] === true) state.allSites = true;
   await rebuildAll();
 }
 
