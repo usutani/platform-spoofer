@@ -224,11 +224,21 @@ async function rebuildContentScripts(sites, profileKey, allSites) {
   }
 }
 
-async function rebuildAll() {
-  const sites = sortedSites();
-  const cfg = await loadProfileConfig(state.profile);
-  await rebuildRules(sites, cfg, state.allSites);
-  await rebuildContentScripts(sites, state.profile, state.allSites);
+let rebuildChain = Promise.resolve();
+
+function rebuildAll() {
+  const p = rebuildChain.then(async () => {
+    try {
+      const sites = sortedSites();
+      const cfg = await loadProfileConfig(state.profile);
+      await rebuildRules(sites, cfg, state.allSites);
+      await rebuildContentScripts(sites, state.profile, state.allSites);
+    } catch (e) {
+      console.warn("[Platform Spoofer] rebuildAll failed:", e.message || e);
+    }
+  });
+  rebuildChain = p.catch(() => {});
+  return p;
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
