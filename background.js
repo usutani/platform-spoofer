@@ -64,18 +64,6 @@ function patternToOrigin(pattern) {
   }
 }
 
-function permissionPatternsForOrigin(origin) {
-  try {
-    const u = new URL(origin);
-    const withPort = `${origin}/*`;
-    const withoutPort = `${u.protocol}//${u.hostname}/*`;
-    if (withPort === withoutPort) return [withPort];
-    return [withPort, withoutPort];
-  } catch {
-    return [`${origin}/*`];
-  }
-}
-
 async function loadProfileConfig(key) {
   const entry = PROFILES[key] || PROFILES["windows-chrome"];
   try {
@@ -235,11 +223,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (typeof msg.origin === "string" && state.sites.delete(msg.origin)) {
         persistSites();
         await rebuildAll();
-        for (const pattern of permissionPatternsForOrigin(msg.origin)) {
-          try {
-            const removed = await chrome.permissions.remove({ origins: [pattern] });
-            if (removed) break;
-          } catch {}
+        try {
+          const { origins: granted } = await chrome.permissions.getAll();
+          const toRemove = (granted || []).filter((pat) => {
+            const o = patternToOrigin(pat);
+            return o && o === msg.origin;
+          });
+          if (toRemove.length) {
+            await chrome.permissions.remove({ origins: toRemove });
+          }
+        } catch (e) {
+          console.warn("[Platform Spoofer] remove permission failed:", e.message || e);
         }
       }
       sendResponse({ sites: sortedSites() });
