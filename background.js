@@ -311,6 +311,14 @@ chrome.permissions.onAdded.addListener(async (perms) => {
   if (!perms.origins || perms.origins.length === 0) return;
   let changed = false;
   for (const pattern of perms.origins) {
+    if (pattern === ALL_URLS) {
+      if (!state.allSites) {
+        state.allSites = true;
+        persistAllSites();
+        changed = true;
+      }
+      continue;
+    }
     const origin = patternToOrigin(pattern);
     if (origin && isWebUrl(origin) && !state.sites.has(origin)) {
       state.sites.add(origin);
