@@ -73,6 +73,14 @@
       padding: 6px 0;
       font-size: 13px;
     }
+    .note {
+      font-size: 11px;
+      color: #888;
+      margin: 4px 0 8px;
+    }
+    input[type="radio"] {
+      margin-right: 6px;
+    }
   </style>
 </head>
 <body>
@@ -85,6 +93,14 @@
     <label for="profile">偽装先</label>
     <select id="profile"></select>
   </div>
+  <h2>適用範囲</h2>
+  <div class="row">
+    <label><input type="radio" name="scope" value="sites"> 指定したサイトのみ</label>
+  </div>
+  <div class="row">
+    <label><input type="radio" name="scope" value="all"> すべてのサイト</label>
+  </div>
+  <p id="scope-note" class="note"></p>
   <h2>有効なサイト</h2>
   <ul id="site-list"></ul>
   <button id="reload">現在のタブをリロード</button>
